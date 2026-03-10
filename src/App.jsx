@@ -2,6 +2,13 @@ import { useState, useRef, useEffect } from "react";
 
 const SYSTEM_PROMPT = `You are a certified Land Rover Discovery 3 (LR3/Disco 3) specialist with 20+ years of hands-on experience. You have deep knowledge of every system: electronics, CANbus architecture, air suspension (EAS), engine variants (2.7 TDV6, TDV8, 4.4 V8), drivetrain, and the notoriously quirky electrical gremlins this platform is known for.
 
+YOU HAVE WEB SEARCH. Use it proactively when:
+- The user describes a specific fault code or unusual symptom
+- You want to check if there's a known fix on Disco3.co.uk, LR4x4.com, or DefenderSource forums
+- You need to verify a part number or recall
+- A problem sounds like it might have a TSB (Technical Service Bulletin)
+Search naturally as part of your diagnostic process. Don't announce that you're searching — just do it and weave the findings into your answer.
+
 YOUR DIAGNOSTIC STYLE:
 - Talk like an experienced mechanic, NOT a textbook. Be direct and conversational.
 - Don't dump everything at once. Ask one or two targeted questions, then narrow down.
@@ -55,17 +62,47 @@ const WELCOME_MESSAGE = {
   content: `Alright, let's have a look at your Disco 3.\n\nWhat's it doing? Give me the symptoms — warning lights, noises, when it happens, and your mileage if you know it. The more specific, the faster we'll nail it.`
 };
 
+const TOOLS = [
+  {
+    type: "web_search_20250305",
+    name: "web_search"
+  }
+];
+
 export default function LR3Diagnostic() {
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState(null);
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, searching]);
+
+  const callAPI = async (msgs) => {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        tools: TOOLS,
+        messages: msgs
+      })
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    return data;
+  };
 
   const sendMessage = async () => {
     const trimmed = input.trim();
@@ -75,35 +112,49 @@ export default function LR3Diagnostic() {
     setMessages(newMessages);
     setInput("");
     setLoading(true);
+    setSearching(false);
     setError(null);
 
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: SYSTEM_PROMPT,
-          messages: newMessages.map(m => ({ role: m.role, content: m.content }))
-        })
-      });
+      let apiMessages = newMessages
+        .filter(m => m.role === "user" || m.role === "assistant")
+        .map(m => ({ role: m.role, content: m.content }));
 
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message);
+      let data = await callAPI(apiMessages);
 
-      const reply = data.content?.map(b => b.text || "").join("\n") || "No response.";
+      // Agentic loop: handle tool use (web search)
+      while (data.stop_reason === "tool_use") {
+        setSearching(true);
+
+        const assistantMsg = { role: "assistant", content: data.content };
+        apiMessages = [...apiMessages, assistantMsg];
+
+        const toolResults = data.content
+          .filter(b => b.type === "tool_use")
+          .map(b => ({
+            type: "tool_result",
+            tool_use_id: b.id,
+            content: b.content || ""
+          }));
+
+        apiMessages = [...apiMessages, { role: "user", content: toolResults }];
+        data = await callAPI(apiMessages);
+      }
+
+      setSearching(false);
+
+      const reply = data.content
+        ?.filter(b => b.type === "text")
+        .map(b => b.text)
+        .join("\n") || "No response.";
+
       setMessages(prev => [...prev, { role: "assistant", content: reply }]);
     } catch (err) {
       setError("Connection failed. Check your API key and network.");
       console.error(err);
     } finally {
       setLoading(false);
+      setSearching(false);
     }
   };
 
@@ -177,7 +228,17 @@ export default function LR3Diagnostic() {
           </div>
         ))}
 
-        {loading && (
+        {searching && (
+          <div style={styles.aiBubbleWrap}>
+            <div style={styles.mechanicBadge}>MECH</div>
+            <div style={{ ...styles.aiBubble, ...styles.searchingBubble }}>
+              <span style={styles.searchIcon}>🔍</span>
+              <span style={styles.searchingText}>Checking forums and tech docs…</span>
+            </div>
+          </div>
+        )}
+
+        {loading && !searching && (
           <div style={styles.aiBubbleWrap}>
             <div style={styles.mechanicBadge}>MECH</div>
             <div style={styles.aiBubble}>
@@ -226,6 +287,7 @@ export default function LR3Diagnostic() {
         ::-webkit-scrollbar-track { background: #111; }
         ::-webkit-scrollbar-thumb { background: #C8A84B55; border-radius: 2px; }
         @keyframes pulse { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.4);opacity:0.7} }
+        @keyframes searchPulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
         textarea:focus { border-color: #C8A84B55 !important; }
       `}</style>
     </div>
@@ -342,6 +404,20 @@ const styles = {
     background: "#141410", border: "1px solid #2a2720",
     borderLeft: "3px solid #C8A84B", borderRadius: "0 4px 4px 4px",
     padding: "12px 16px", fontSize: 14, lineHeight: 1.65, color: "#ccc8bc",
+  },
+  searchingBubble: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    borderLeft: "3px solid #4A9EFF",
+    animation: "searchPulse 1.5s ease-in-out infinite",
+  },
+  searchIcon: { fontSize: 14 },
+  searchingText: {
+    fontFamily: "'Share Tech Mono', monospace",
+    fontSize: 11,
+    color: "#4A9EFF",
+    letterSpacing: "0.05em",
   },
   userBubble: {
     background: "#080e1a", border: "1px solid #1a2440",
