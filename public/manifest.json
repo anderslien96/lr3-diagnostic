@@ -1,0 +1,22 @@
+{
+  "name": "LR3 Diagnostic Expert System",
+  "short_name": "LR3 Diag",
+  "description": "Land Rover Discovery 3 AI Diagnostic Tool",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e0e0e",
+  "theme_color": "#C8A84B",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
